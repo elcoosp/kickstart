@@ -29,6 +29,8 @@ pub struct Error {
 #[non_exhaustive]
 pub enum ErrorKind {
     MissingTemplateDefinition,
+    MissingDefault(String),
+    InvalidChoices(String),
     InvalidTemplate,
     UnreadableStdin,
     InvalidVariableName(String),
@@ -74,6 +76,12 @@ impl std::error::Error for Error {
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self.kind {
+            ErrorKind::MissingDefault(ref name) => {
+                write!(f, "Variable `{}` has no default and no choices to infer a value", name)
+            }
+            ErrorKind::InvalidChoices(ref name) => {
+                write!(f, "Variable `{}` has empty choices", name)
+            }
             ErrorKind::Io { ref err, ref path } => write!(f, "{}: {:?}", err, path),
             ErrorKind::Tera { ref err, ref path } => {
                 if let Some(p) = path {

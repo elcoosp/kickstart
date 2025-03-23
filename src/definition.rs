@@ -1,9 +1,8 @@
 use glob::Pattern;
 use regex::Regex;
+use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-
-use serde::Deserialize;
 use tera::Context;
 
 use crate::errors::{new_error, ErrorKind, Result};
@@ -33,7 +32,7 @@ pub struct Variable {
     /// The variable name in the final context
     pub name: String,
     /// A default value is required. It can be a Tera expression if it is a string.
-    pub(crate) default: Value,
+    pub default: Option<Value>,
     /// The text asked to the user
     pub prompt: String,
     /// Only for questions with choices
@@ -132,70 +131,92 @@ impl TemplateDefinition {
         }
 
         for var in &self.variables {
-            let type_str = var.default.type_str();
-            types.insert(var.name.to_string(), type_str);
-
-            if let Some(ref choices) = var.choices {
-                let mut choice_found = false;
-                for c in choices {
-                    if *c == var.default {
-                        choice_found = true;
-                    }
-                }
-                if !choice_found {
-                    errs.push(format!(
-                        "Variable `{}` has `{}` as default, which isn't in the choices",
-                        var.name, var.default
-                    ));
-                }
+            if var.default.is_none() && var.choices.is_none() {
+                errs.push(format!("Variable `{}` has no default or choices", var.name));
             }
-
-            // Since variables are ordered, we can detect whether the only_if is referring
-            // to an unknown variable or a variable of the wrong type
-            if let Some(ref cond) = var.only_if {
-                if let Some(ref t) = types.get(&cond.name) {
-                    if **t != cond.value.type_str() {
-                        errs.push(format!(
-                            "Variable `{}` depends on `{}={}`, but the type of `{}` is {}",
-                            var.name, cond.name, cond.value, cond.name, t
-                        ));
-                    }
-                } else {
-                    errs.push(format!(
-                        "Variable `{}` depends on `{}`, which wasn't asked",
-                        var.name, cond.name
-                    ));
-                }
-            }
-
-            if let Some(ref pattern) = var.validation {
-                if !var.default.is_str() {
-                    errs.push(format!(
-                        "Variable `{}` has a validation regex but is not a string",
-                        var.name
-                    ));
+            let var_type = if let Some(ref default) = var.default {
+                default.type_str()
+            } else if let Some(ref choices) = var.choices {
+                if choices.is_empty() {
+                    errs.push(format!("Variable `{}` has empty choices", var.name));
                     continue;
                 }
+                let first_type = choices[0].type_str();
+                for c in choices.iter().skip(1) {
+                    if c.type_str() != first_type {
+                        errs.push(format!(
+                            "Variable `{}` has choices of different types",
+                            var.name
+                        ));
+                        break;
+                    }
+                }
+                first_type
+            } else {
+                errs.push(format!(
+                    "Variable `{}` has no default or choices to infer type",
+                    var.name
+                ));
+                continue;
+            };
+            types.insert(var.name.clone(), var_type);
 
+            // Check if default is in choices
+            if let (Some(default), Some(choices)) = (&var.default, &var.choices) {
+                if !choices.contains(default) {
+                    errs.push(format!(
+                        "Variable `{}` default `{}` not in choices",
+                        var.name, default
+                    ));
+                }
+            }
+
+            // Validate regex only applies to strings
+            if let Some(ref pattern) = var.validation {
+                if var_type != "string" {
+                    errs.push(format!("Variable `{}` has regex but is not a string", var.name));
+                    continue;
+                }
                 match Regex::new(pattern) {
                     Ok(re) => {
-                        if !re.is_match(var.default.as_str().unwrap()) {
-                            errs.push(format!(
-                                "Variable `{}` has a default that doesn't pass its validation regex",
-                                var.name
-                            ));
+                        if let Some(Value::String(default_str)) = &var.default {
+                            if !re.is_match(default_str) {
+                                errs.push(format!(
+                                    "Variable `{}` default fails regex validation",
+                                    var.name
+                                ));
+                            }
                         }
                     }
                     Err(_) => {
                         errs.push(format!(
-                            "Variable `{}` has an invalid validation regex: {}",
+                            "Variable `{}` has invalid regex: {}",
                             var.name, pattern
                         ));
                     }
                 }
             }
-        }
 
+            // Check only_if conditions
+            if let Some(ref cond) = var.only_if {
+                if let Some(cond_var_type) = types.get(&cond.name) {
+                    if *cond_var_type != cond.value.type_str() {
+                        errs.push(format!(
+                            "Variable `{}` depends on `{}` (type {}), but expected type {}",
+                            var.name,
+                            cond.name,
+                            cond.value.type_str(),
+                            cond_var_type
+                        ));
+                    }
+                } else {
+                    errs.push(format!(
+                        "Variable `{}` depends on undefined variable `{}`",
+                        var.name, cond.name
+                    ));
+                }
+            }
+        }
         errs
     }
 
@@ -213,32 +234,32 @@ impl TemplateDefinition {
     pub fn default_values(&self) -> Result<HashMap<String, Value>> {
         let mut vals = HashMap::new();
         for var in &self.variables {
-            // Skip the question if the value is different from the condition
             if let Some(ref cond) = var.only_if {
                 if let Some(val) = vals.get(&cond.name) {
                     if *val != cond.value {
                         continue;
                     }
                 } else {
-                    // Not having it means we didn't even ask the question
                     continue;
                 }
             }
 
-            match &var.default {
-                Value::Boolean(b) => {
-                    vals.insert(var.name.clone(), Value::Boolean(*b));
-                }
-                Value::String(s) => {
-                    let mut context = Context::new();
-                    for (key, val) in &vals {
-                        context.insert(key, val);
+            if let Some(default) = &var.default {
+                match default {
+                    Value::Boolean(b) => {
+                        vals.insert(var.name.clone(), Value::Boolean(*b));
                     }
-                    let rendered_default = render_one_off_template(s, &context, None)?;
-                    vals.insert(var.name.clone(), Value::String(rendered_default));
-                }
-                Value::Integer(i) => {
-                    vals.insert(var.name.clone(), Value::Integer(*i));
+                    Value::String(s) => {
+                        let mut context = Context::new();
+                        for (key, val) in &vals {
+                            context.insert(key, val);
+                        }
+                        let rendered = render_one_off_template(s, &context, None)?;
+                        vals.insert(var.name.clone(), Value::String(rendered));
+                    }
+                    Value::Integer(i) => {
+                        vals.insert(var.name.clone(), Value::Integer(*i));
+                    }
                 }
             }
         }

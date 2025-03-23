@@ -120,17 +120,32 @@ impl Template {
     /// Will error if the template doesn't know that variable name.
     pub fn get_default_for(&self, name: &str, vals: &HashMap<String, Value>) -> Result<Value> {
         let var = self.get_variable_by_name(name)?;
-        match &var.default {
-            Value::Integer(i) => Ok(Value::Integer(*i)),
-            Value::Boolean(i) => Ok(Value::Boolean(*i)),
-            Value::String(i) => {
-                // TODO: Very inefficient but might be ok?
+
+        // Determine the default value or infer from choices
+        let default_value = match (&var.default, &var.choices) {
+            (Some(default), _) => default.clone(),
+            (None, Some(choices)) => {
+                if choices.is_empty() {
+                    return Err(new_error(ErrorKind::InvalidVariableName(var.name.clone())));
+                }
+                choices[0].clone()
+            }
+            (None, None) => {
+                return Err(new_error(ErrorKind::MissingDefault(var.name.clone())));
+            }
+        };
+
+        // Process based on the type of default_value
+        match default_value {
+            Value::Integer(i) => Ok(Value::Integer(i)),
+            Value::Boolean(b) => Ok(Value::Boolean(b)),
+            Value::String(s) => {
                 let mut context = Context::new();
                 for (key, val) in vals {
                     context.insert(key, val);
                 }
-                let rendered_default = render_one_off_template(i, &context, None)?;
-                Ok(Value::String(rendered_default))
+                let rendered = render_one_off_template(&s, &context, None)?;
+                Ok(Value::String(rendered))
             }
         }
     }
