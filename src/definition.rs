@@ -165,7 +165,7 @@ impl TemplateDefinition {
             if let (Some(default), Some(choices)) = (&var.default, &var.choices) {
                 if !choices.contains(default) {
                     errs.push(format!(
-                        "Variable `{}` default `{}` not in choices",
+                        "Variable `{}` has `{}` as default, which isn't in the choices",
                         var.name, default
                     ));
                 }
@@ -174,7 +174,10 @@ impl TemplateDefinition {
             // Validate regex only applies to strings
             if let Some(ref pattern) = var.validation {
                 if var_type != "string" {
-                    errs.push(format!("Variable `{}` has regex but is not a string", var.name));
+                    errs.push(format!(
+                        "Variable `{}` has a validation regex but is not a string",
+                        var.name
+                    ));
                     continue;
                 }
                 match Regex::new(pattern) {
@@ -182,7 +185,7 @@ impl TemplateDefinition {
                         if let Some(Value::String(default_str)) = &var.default {
                             if !re.is_match(default_str) {
                                 errs.push(format!(
-                                    "Variable `{}` default fails regex validation",
+                                    "Variable `{}` has a default that doesn't pass its validation regex",
                                     var.name
                                 ));
                             }
@@ -190,7 +193,7 @@ impl TemplateDefinition {
                     }
                     Err(_) => {
                         errs.push(format!(
-                            "Variable `{}` has invalid regex: {}",
+                            "Variable `{}` has an invalid validation regex: {}",
                             var.name, pattern
                         ));
                     }
@@ -202,16 +205,13 @@ impl TemplateDefinition {
                 if let Some(cond_var_type) = types.get(&cond.name) {
                     if *cond_var_type != cond.value.type_str() {
                         errs.push(format!(
-                            "Variable `{}` depends on `{}` (type {}), but expected type {}",
-                            var.name,
-                            cond.name,
-                            cond.value.type_str(),
-                            cond_var_type
+                            "Variable `{}` depends on `{}={}`, but the type of `{}` is {}",
+                            var.name, cond.name, cond.value, cond.name, cond_var_type
                         ));
                     }
                 } else {
                     errs.push(format!(
-                        "Variable `{}` depends on undefined variable `{}`",
+                        "Variable `{}` depends on `{}`, which wasn't asked",
                         var.name, cond.name
                     ));
                 }
